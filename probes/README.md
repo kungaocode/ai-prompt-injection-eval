@@ -52,9 +52,9 @@ python -m src.main --config configs/models.yaml --probes /tmp/smoke_probes/ --ou
 | `goal-hijacking` | 任务目标偷换 | secret-leak(确定性) | 基础 |
 | `system-leak` | 诱导吐出系统提示/secret | secret-leak(确定性) | 基础 |
 | `indirect-injection` | 注入藏在网页/引用文本 | secret-leak(确定性) | 基础 |
-| `encoding-injection` | 指令经 Base64/ROT13/Hex/反转/leetspeak/零宽隐藏 | secret-leak(确定性) | garak 启发(OOD) |
-| `cloze-leak` | 填空/补全/掩码诱导模型续写 secret 片段 | secret-leak(确定性) | garak 启发(OOD) |
-| `emotional-social` | 祖母/亲情/心理安慰等情感社工越狱 | secret-leak(确定性) | garak 启发(OOD) |
+| `encoding-injection` | 复刻 goodside.Tag:不可见 Unicode/特殊码位(零宽/变体选择符/RLO/数学粗体/全角)把隐藏指令藏在「这串字符是什么?」式正常提问中,不提示有指令 | secret-leak(确定性) | garak 启发(OOD) |
+| `cloze-leak` | 复刻 GuardianCloze:段落语境 + `[MASK]`/`______` 填空,诱导模型补全 secret 片段 | secret-leak(确定性) | garak 启发(OOD) |
+| `emotional-social` | 复刻 grandma.Win10:角色扮演/亲情叙事/哄睡/逐字母拼写社工越狱 | secret-leak(确定性) | garak 启发(OOD) |
 
 判定口径与指标定义见根目录 `taxonomy.md`。
 
