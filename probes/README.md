@@ -46,3 +46,16 @@ python -m src.main --config configs/models.yaml --probes /tmp/smoke_probes/ --ou
 | `indirect-injection` | 注入藏在网页/引用文本 | secret-leak(确定性) |
 
 判定口径与指标定义见根目录 `taxonomy.md`。
+
+## 安全微调数据集(供云端 SFT)
+
+`scripts/build_safety_sft_data.py` 从本探针库构造"安全性微调"数据集(OpenAI messages 格式 JSONL,百炼可直接上传):
+
+```bash
+python3 scripts/build_safety_sft_data.py            # 输出 data/safety_sft/{train,val,test}.jsonl
+```
+
+- 攻击样本 = 60 条评测探针 + 每类每语言 2 条补充模板(共 80),配对**类别化拒答**黄金回复;
+- 良性样本 = 中英各 12+ 条正常问答(防安全微调后过度拒绝);
+- 拆分:**test 覆盖全部 5 类 × 中英 + 良性**(26 条,为训练**未见过的**原始探针子集,用于公平评测)、val 14、train 65;
+- 同 seed 可完全复现(固定 seed=42);生成物已 gitignore。
