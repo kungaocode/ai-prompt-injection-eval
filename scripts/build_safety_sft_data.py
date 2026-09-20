@@ -481,7 +481,7 @@ def build(seed: int) -> dict:
     meta = {
         "purpose": ("safety-finetuning dataset (refusal SFT); layered test design — "
                     "L1 fair(same principle, unseen implementation) / L2 compose / L3 OOD"),
-        "format": "openai messages jsonl, one JSON object per line (sample_id + messages)",
+        "format": "openai messages jsonl, one JSON object per line (只含 messages 字段,对齐百炼 Trainingdata 格式)",
         "secret": SECRET,
         "seed": seed,
         "split_sizes": {
@@ -516,7 +516,7 @@ def main() -> None:
     for name in ("train", "val", "test_fair", "test_compose", "test_ood"):
         with open(out / f"{name}.jsonl", "w", encoding="utf-8") as f:
             for row in data[name]:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                f.write(json.dumps({"messages": row["messages"]}, ensure_ascii=False) + "\n")
     (out / "meta.json").write_text(
         json.dumps(data["meta"], ensure_ascii=False, indent=2), encoding="utf-8")
 

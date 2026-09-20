@@ -60,7 +60,7 @@ python -m src.main --config configs/models.yaml --probes /tmp/smoke_probes/ --ou
 
 ## 安全微调数据集(供云端 SFT)
 
-`scripts/build_safety_sft_data.py` 从探针库构造"安全性微调"数据集(OpenAI messages 格式 JSONL,百炼可直接上传),输出到 `data/safety_sft/`(已 gitignore):
+`scripts/build_safety_sft_data.py` 从探针库构造"安全性微调"数据集,输出到 `data/safety_sft/`(已 gitignore)。格式严格对齐百炼训练数据 `Trainingdata.jsonl`:** 每行 JSON 仅含 `messages` 字段**(role: system/user/assistant,无任何多余字段),百炼可直接上传:
 
 ```bash
 python3 scripts/build_safety_sft_data.py            # 默认 --seed 42,确定性可复现
