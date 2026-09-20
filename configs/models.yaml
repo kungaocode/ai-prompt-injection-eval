@@ -13,6 +13,7 @@ system_template: |
 dashscope:
   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
   api_key_env: "DASHSCOPE_API_KEY"
+  enable_thinking: false  # 写死关闭 thinking(实际由 src/runner.py 的 ENABLE_THINKING 常量控制)
 
 # 被测对象(云模型)。可换成任意 OpenAI 兼容端点的模型。
 targets:

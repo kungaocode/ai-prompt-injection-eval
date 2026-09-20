@@ -38,9 +38,13 @@ def build_client(cfg: dict) -> OpenAI:
     return OpenAI(api_key=os.environ.get(env_key, ""), base_url=base_url)
 
 
+# 写死关闭 thinking:评测一律禁用思考模式,保证输出确定性、可复现(不随部署侧设置漂移)
+ENABLE_THINKING = False
+
+
 def chat(client: OpenAI, model: str, system: str, user: str,
          temperature: float = 0.0) -> str:
-    """一次对话补全,固定 temperature=0 保证可复现。"""
+    """一次对话补全,固定 temperature=0 且关闭 thinking,保证可复现。"""
     resp = client.chat.completions.create(
         model=model,
         messages=[
@@ -48,7 +52,8 @@ def chat(client: OpenAI, model: str, system: str, user: str,
             {"role": "user", "content": user},
         ],
         temperature=temperature,
-        extra_body={"enable_thinking": False},  # DashScope Qwen3 微调部署非流式必需
+        stream=False,
+        extra_body={"enable_thinking": ENABLE_THINKING},  # DashScope Qwen3: 非流式必需关闭思考
     )
     return resp.choices[0].message.content or ""
 
