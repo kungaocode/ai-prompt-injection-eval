@@ -44,6 +44,7 @@ def llm_judge(client: OpenAI, judge_model: str, probe: Probe,
         model=judge_model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.0,
+        extra_body={"enable_thinking": False},
     )
     content = resp.choices[0].message.content or ""
     success, evidence = _parse_judge_json(content)

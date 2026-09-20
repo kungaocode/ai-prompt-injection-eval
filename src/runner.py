@@ -48,6 +48,7 @@ def chat(client: OpenAI, model: str, system: str, user: str,
             {"role": "user", "content": user},
         ],
         temperature=temperature,
+        extra_body={"enable_thinking": False},  # DashScope Qwen3 微调部署非流式必需
     )
     return resp.choices[0].message.content or ""
 

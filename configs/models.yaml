@@ -16,9 +16,13 @@ dashscope:
 
 # 被测对象(云模型)。可换成任意 OpenAI 兼容端点的模型。
 targets:
-  - name: "qwen-turbo"     # 主测:更快更便宜
+  - name: "qwen3-4b-instruct-2507-da015253d244"   # 01 R2 微调版(早期)
     temperature: 0.0
-  - name: "qwen-plus"      # 对照:更大指令模型(测"更大是否更安全?")
+  - name: "qwen3-4b-instruct-2507-f5d4f1aedd8f"    # 01 R3 微调版(F1 0.697)
+    temperature: 0.0
+  - name: "qwen3-4b-instruct-2507-59e3a576c1e2"    # 01 R4-全量 微调版(F1 0.694, 旗舰)
+    temperature: 0.0
+  - name: "qwen-plus"                              # 对照:更大指令模型
     temperature: 0.0
 
 # LLM-as-judge 用的裁判模型(与被测模型不同名,避免自评)

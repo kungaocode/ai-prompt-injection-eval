@@ -1,5 +1,6 @@
 # 环境与密钥(切勿提交)
 .env
+api.txt
 
 # Python
 __pycache__/
