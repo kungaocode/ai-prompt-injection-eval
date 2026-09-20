@@ -1,0 +1,5 @@
+[2026-08-07T21:28:46] step=500/6567 (7.6%) | avg_loss=2.4061 | avg_gn=0.4753 | checkpoints=3 | HEALTHY
+[2026-08-07T21:31:15] step=510/6567 (7.8%) | loss_avg=2.4052 | gn_avg=0.4761 | ckpts=3 | trend=STABLE | HEALTHY
+[2026-08-08T01:38:12] step=1440/6567 (21.9%) | loss_avg=2.3540 | gn_avg=0.5836 | gn_max=5.3 | HEALTHY
+[2026-08-08T09:37:49] step=3120/6567 (47.5%) | loss: 1.8926-2.8012 | GN: 0.27-5.28 | escalation=1.04x | status: HEALTHY
+[2026-08-09T01:01:01] step=2880/6567 (43.9%) | loss: 1.89-2.80 | GN: 0.26-1.40 | alive=Y | HEALTHY

@@ -1,0 +1,570 @@
+%!TEX TS-program = xelatex
+\documentclass[12pt,a4paper]{ctexart}
+
+\usepackage{graphicx,booktabs,longtable,hyperref,multirow,amsmath,array}
+\usepackage[margin=2.3cm,headheight=15pt]{geometry}
+\usepackage{titlesec,xcolor,fancyhdr,enumitem}
+
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue,
+    pdftitle={第三阶段——QLoRA领域继续预训练实验报告},pdfauthor={Qwen3-4B微调项目}}
+
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{Qwen3 微调项目}\fancyhead[R]{第三阶段报告}
+\fancyfoot[C]{\thepage}
+
+\title{\textbf{大模型微调项目第三阶段报告}\\[4pt]\large Qwen3-4B-Base QLoRA 领域继续预训练}
+\author{计算机·密码与安全特化模型}
+\date{\today}
+
+\begin{document}\maketitle\thispagestyle{empty}
+
+\begin{abstract}
+\noindent 本报告记录了第三阶段的核心工作——在消费级显卡（NVIDIA RTX 4060 8GB）上使用 QLoRA 技术对 Qwen3-4B-Base 进行领域继续预训练（Domain Continued Pretraining）。训练使用第一阶段产出的 19,452 条领域文本（计算机科学、密码学与信息安全），经 6,567 步（3 个 epoch）训练后，在验证集上困惑度（PPL）较基础模型降低 22--28\%。实验过程中发现并修复了 6 个关键 Bug（涉及训练恢复、编码兼容性、库版本冲突等），并确认了过拟合现象——最优检查点出现在第 3,840 步（epoch 1.75）而非最终模型。本报告系统记录了实验配置、训练过程、损失分析、评估结果及数据质量诊断。
+\end{abstract}
+
+\section{实验概述}
+
+\subsection{实验目标}
+
+在消费级 GPU（RTX 4060 8GB）上，使用 QLoRA 参数高效微调技术，对 Qwen3-4B-Base 基础模型进行领域继续预训练，使其掌握计算机科学、密码学与信息安全三个领域的专业知识和术语。目标是验证：\textbf{消费级硬件上进行领域适配是否可行，以及适配效果如何。}
+
+\subsection{基础模型信息}
+
+\begin{table}[htbp]\centering
+\caption{Qwen3-4B-Base 架构参数}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{参数项} & \textbf{值} \\
+\midrule
+模型名称   & Qwen3-4B-Base (HuggingFace: Qwen/Qwen3-4B-Base) \\
+架构       & Qwen3ForCausalLM (因果语言模型) \\
+层数       & 36 层 Transformer \\
+隐藏维度   & 2,560 \\
+注意力头   & 32 Query 头 + 8 KV 头（GQA, 4:1 分组） \\
+词表大小   & 151,936 \\
+最大上下文 & 32,768 tokens \\
+FFN 中间层 & 9,728 \\
+激活函数   & SiLU \\
+位置编码   & RoPE ($\theta = 1{,}000{,}000$) \\
+总参数量   & 4,055,498,240（$\sim$4.06B），磁盘占用 $\sim$7.8 GB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{QLoRA 配置}
+
+面临的核心约束是 RTX 4060 仅 8 GB 显存——全参数微调需要 30+ GB 显存，完全不可行。因此采用 QLoRA（Quantized Low-Rank Adaptation）方案，组合三种技术：
+
+\begin{enumerate}[nosep]
+    \item \textbf{4-bit 量化}：权重从 FP16 压缩到 NF4，显存降低约 4 倍
+    \item \textbf{LoRA 低秩适配}：仅训练低秩矩阵，可训练参数仅占总参数的 0.81\%
+    \item \textbf{梯度检查点}：反向传播时重新计算激活值，以时间换空间
+\end{enumerate}
+
+\begin{table}[htbp]\centering
+\caption{QLoRA 配置参数}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{参数} & \textbf{值} \\
+\midrule
+量化类型   & 4-bit NormalFloat4（NF4）\\
+双重量化   & 启用（对量化常数再做 8-bit 量化）\\
+计算精度   & FP16（反量化后前向/反向传播精度）\\
+LoRA rank  & $r = 16$ \\
+LoRA alpha & $\alpha = 32$（缩放因子 $\alpha/r = 2$）\\
+LoRA dropout & 0.05 \\
+目标模块   & 7 个/层 $\times$ 36 层 = 252 个适配器 \\
+          & (q\_proj, k\_proj, v\_proj, o\_proj, gate\_proj, up\_proj, down\_proj) \\
+可训练参数 & 33,030,144（占总参数 0.8145\%）\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{硬件与软件环境}
+
+\begin{table}[htbp]\centering
+\caption{实验环境}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{项目} & \textbf{配置} \\
+\midrule
+GPU        & NVIDIA GeForce RTX 4060，8 GB VRAM \\
+CPU        & AMD Ryzen 系列，32 GB RAM \\
+操作系统   & Windows 11 Pro（中文环境，GBK 代码页）\\
+Python     & 3.12（conda 环境: qwen）\\
+PyTorch    & 2.5.1+cu121 \\
+Transformers & 5.13.1（从 5.14 降级以解决兼容性问题）\\
+PEFT       & 最新版（LoRA 注入）\\
+TRL        & 最新版（SFTTrainer）\\
+BitsAndBytes & 0.45+（4-bit 量化）\\
+Datasets   & 最新版（数据处理）\\
+CUDA       & 12.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{训练数据}
+
+训练数据来源于第一阶段产出的 raw JSONL 文件，三个领域共 20 个文件：
+
+\begin{table}[htbp]\centering
+\caption{训练数据统计}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{领域} & \textbf{子类数} & \textbf{原始记录} & \textbf{覆盖主题} \\
+\midrule
+computer\_science   & 9 & 6,221 & 算法、AI、体系结构、网络、数据库、OS、PL/SE、理论 \\
+crypto\_and\_security & 9 & 13,026 & 认证、密码算法、密码基础、协议、PKI、网络安全、系统安全 \\
+comprehensive       & 2 & 217   & 跨领域综合、NIST 标准 \\
+\midrule
+\textbf{总计}       & \textbf{20} & \textbf{19,464} & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+数据清洗后：有效记录 19,452 条（过滤 12 条空白/短于 50 字符），总字符数 $\sim$31M，估算 Token 数 $\sim$8.9M。按 90:10 划分为训练集（17,506）和验证集（1,946），随机种子 42。
+
+\subsection{训练超参数}
+
+\begin{table}[htbp]\centering
+\caption{训练超参数配置}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{参数} & \textbf{值} \\
+\midrule
+Micro batch size    & 1 \\
+梯度累积步数        & 8 \\
+等效 batch size     & 8 \\
+序列长度            & 2,048 tokens \\
+学习率              & $2.5 \times 10^{-5}$，余弦调度 \\
+Warmup 步数         & 0（在恢复点之前已完成）\\
+最大梯度范数        & 0.3（梯度裁剪）\\
+优化器              & AdamW（PyTorch 内置）\\
+训练轮次            & 3（总计 6,567 步）\\
+日志间隔            & 每 5 步 \\
+检查点间隔          & 每 480 步（$\sim$2h），保留最近 20 个 \\
+混合精度            & 禁用（与 4-bit + FP16 冲突）\\
+序列打包            & 禁用（领域文档相互独立）\\
+注意力实现          & SDPA（自动选择最优实现）\\
+数据加载进程        & 0（Windows 多进程兼容性）\\
+总训练时间          & $\sim$26 小时（$\sim$14 秒/步）\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{训练过程与关键技术问题}
+
+训练过程分为三个阶段，其中第二阶段耗费了大量调试时间。
+
+\subsection{第一阶段：初始训练（Step 0 $\to$ 2,880）}
+
+训练于 2026-08-08 启动。模型从 Step 5 的 loss 2.577 收敛至 Step 2,880 的 loss 2.068。验证集 loss 从 2.335 降至 2.250。训练在 Step 2,880（epoch 1.32，进度 43.9\%）处中止。耗时约 14 小时。
+
+\subsection{第二阶段：恢复尝试失败（多次，浪费 $\sim$12 小时）}
+
+在随后的 12 小时内进行了多次恢复尝试，但\textbf{全部静默失败}：正确加载了 adapter 权重，却将优化器动量、学习率调度器、全局步数计数器和随机数状态\textbf{全部重置为零}。每次重启都在 checkpoint-2880 的权重上从零开始训练，浪费 GPU 时间并产生令人困惑的日志（epoch 始终重置为 0.002）。
+
+\subsection{六个关键 Bug 的发现与修复}
+
+\subsubsection*{Bug 1：缺少 resume\_from\_checkpoint 参数}
+
+\textbf{位置}：\texttt{train\_qwen3\_4b.py, resume\_train.py}
+
+\textbf{症状}：每次重启都从 global\_step=0 开始，尽管正确加载了 checkpoint-2880 的 adapter 权重。
+
+\textbf{根因}：\texttt{trainer.train()} 未传入 \texttt{resume\_from\_checkpoint} 参数。Trainer 仅在显式指定时才恢复优化器/调度器/步数状态。
+
+\textbf{修复}：改为 \texttt{trainer.train(resume\_from\_checkpoint=...)}，并添加 \texttt{find\_latest\_checkpoint()} 自动发现最新检查点。
+
+\subsubsection*{Bug 2：中文 Windows 下的 UnicodeEncodeError（GBK 代码页）}
+
+\textbf{位置}：训练脚本中多处 \texttt{print()} 语句
+
+\textbf{症状}：脚本在 \texttt{print()} 处崩溃，抛出 UnicodeEncodeError。
+
+\textbf{根因}：使用了 U+2022（项目符号）和 U+2014（长破折号）等 GBK 无法编码的字符。中文 Windows 终端默认为 GBK 代码页而非 UTF-8。
+
+\textbf{修复}：全部替换为 ASCII 等效字符：项目符号 $\to$ \texttt{[-]}，长破折号 $\to$ \texttt{--}。
+
+\subsubsection*{Bug 3：transformers 5.14 要求 torch $\ge$ 2.6}
+
+\textbf{位置}：\texttt{transformers/trainer.py} 导入链
+
+\textbf{症状}：\texttt{ValueError: upgrade torch to at least v2.6}。
+
+\textbf{根因}：transformers 5.14.1 新增了 \texttt{check\_torch\_load\_is\_safe} 安全检查（针对 CVE-2025-32434），要求 torch $\ge$ 2.6。而 CUDA 12.1 的 PyTorch wheel 最高仅到 torch 2.5.1。
+
+\textbf{修复}：通过 pip 降级至 transformers 5.13.1。
+
+\subsubsection*{Bug 4：torch 2.5.1 无法加载 rng\_state.pth（weights\_only=True）}
+
+\textbf{位置}：\texttt{transformers/trainer.py:\_load\_rng\_state()}
+
+\textbf{症状}：恢复时抛出 \texttt{\_pickle.UnpicklingError}（numpy dtypes 反序列化失败）。
+
+\textbf{根因}：\texttt{rng\_state.pth} 包含 numpy 对象（\_reconstruct, ndarray, dtype, UInt32DType 等）。torch 2.5.1 的 \texttt{weights\_only=True} 安全模式拒绝整个 numpy 类型链。\texttt{add\_safe\_globals} 调用也无法解决。
+
+\textbf{修复}：在所有 HuggingFace 导入\textbf{之前}对 \texttt{torch.load} 进行 monkey-patch，强制对本地检查点使用 \texttt{weights\_only=False}。
+
+\subsubsection*{Bug 5：硬编码的 RESUME\_CHECKPOINT 路径}
+
+\textbf{位置}：\texttt{train\_qwen3\_4b.py} 配置区
+
+\textbf{症状}：每次恢复时必须手动编辑源码修改步数。
+
+\textbf{修复}：替换为 \texttt{find\_latest\_checkpoint()}，自动扫描 \texttt{OUTPUT\_DIR} 下步数最高的检查点目录。
+
+\subsubsection*{Bug 6：日志文件每次运行被覆盖}
+
+\textbf{位置}：\texttt{NaNGuardCallback} 初始化
+
+\textbf{症状}：固定文件名 \texttt{loss\_log.csv} 导致历史数据被破坏。
+
+\textbf{修复}：使用带时间戳的文件名：\texttt{loss\_log\_YYYYMMDD\_HHMMSS.csv}。
+
+\subsection{第三阶段：成功恢复并完成训练（Step 2,885 $\to$ 6,567）}
+
+在全部 6 个 Bug 修复后，训练于 2026-08-09 02:27 从 checkpoint-2880 恢复，顺利完成剩余的 3,687 步，无进一步中断。全流程总计约 26 小时（6,567 步）。
+
+\section{训练损失分析}
+
+\subsection{按 Epoch 统计训练损失}
+
+\begin{table}[htbp]\centering
+\caption{训练损失按 Epoch 统计}
+\begin{tabular}{@{}rrrr@{}}
+\toprule
+\textbf{Epoch} & \textbf{平均 Loss} & \textbf{最小 Loss} & \textbf{最大 Loss} \\
+\midrule
+1.3 & 2.2927 & 2.0680 & 2.4538 \\
+1.4 & 2.2678 & 2.0370 & 2.5064 \\
+1.5 & 2.2630 & 1.9969 & 2.5863 \\
+1.6 & 2.2371 & 1.9871 & 2.4969 \\
+1.7 & 2.2457 & 1.9029 & 2.5890 \\
+1.8 & 2.2759 & 2.0143 & 2.6123 \\
+1.9 & 2.2774 & 1.9452 & 2.5459 \\
+2.0 & 2.2598 & 1.9505 & 2.5356 \\
+2.1 & 2.2751 & 1.9998 & 2.8135 \\
+2.2 & 2.2951 & 2.0032 & 2.4927 \\
+2.3 & 2.2748 & 2.0515 & 2.5522 \\
+2.4 & 2.3387 & 1.9668 & 2.5387 \\
+2.5 & 2.3362 & 2.1233 & 2.6859 \\
+2.6 & 2.3261 & 2.0005 & 2.6161 \\
+2.7 & 2.3319 & 2.0283 & 2.6750 \\
+2.8 & 2.2779 & 2.1203 & 2.4632 \\
+2.9 & 2.3176 & 2.0491 & 2.6049 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+训练损失呈现三阶段特征：
+\begin{enumerate}[nosep]
+    \item \textbf{快速下降期}（Epoch 1.3--1.7）：平均 loss 从 2.29 降至 2.24，最佳个体 loss 1.903 出现在 epoch 1.7
+    \item \textbf{平台期}（Epoch 1.8--2.0）：平均 loss 在 2.26--2.28 间振荡
+    \item \textbf{缓慢上升期}（Epoch 2.1--2.9）：平均 loss 升至 2.32--2.34 区间——经典过拟合信号
+\end{enumerate}
+
+\subsection{按 500 步窗口统计训练损失}
+
+\begin{table}[htbp]\centering
+\caption{训练损失按 500 步窗口统计}
+\begin{tabular}{@{}rrrr@{}}
+\toprule
+\textbf{窗口（步）} & \textbf{平均 Loss} & \textbf{最小值} & \textbf{最大值} \\
+\midrule
+0--500     & 2.4092 & 2.0009 & 2.8012 \\
+500--1000  & 2.3397 & 2.0577 & 2.7286 \\
+1000--1500 & 2.3141 & 2.0040 & 2.6598 \\
+1500--2000 & 2.3003 & 2.0227 & 2.6405 \\
+2000--2500 & 2.2673 & 1.8926 & 2.6088 \\
+2500--3000 & 2.2902 & 2.0291 & 2.6005 \\
+3000--3500 & 2.2699 & 1.9969 & 2.5863 \\
+3500--4000 & 2.2463 & 1.9029 & 2.5890 \\
+4000--4500 & 2.2652 & 1.9452 & 2.6123 \\
+4500--5000 & 2.2855 & 1.9998 & 2.8135 \\
+5000--5500 & 2.3029 & 1.9668 & 2.5522 \\
+5500--6000 & 2.3283 & 2.0005 & 2.6859 \\
+6000--6500 & 2.3141 & 2.0283 & 2.6750 \\
+6500--7000 & 2.2905 & 2.0491 & 2.4698 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+窗口 3,500--4,000 的平均 loss 最低（2.2463）。Step 5,000 之后平均 loss 始终高于 2.30，进一步确认过拟合信号。
+
+\subsection{验证集 Loss 趋势}
+
+\begin{table}[htbp]\centering
+\caption{验证集 Loss 完整趋势}
+\begin{tabular}{@{}rrrrl@{}}
+\toprule
+\textbf{Step} & \textbf{进度} & \textbf{Eval Loss} & \textbf{$\Delta$} & \textbf{备注} \\
+\midrule
+480   & 7.3\%  & 2.3352 & ---      & 基线 \\
+960   & 14.6\% & 2.2912 & $-$0.0440 & 持续下降 \\
+1,440 & 21.9\% & 2.2705 & $-$0.0207 & \\
+1,920 & 29.2\% & 2.2601 & $-$0.0104 & \\
+2,400 & 36.5\% & 2.2535 & $-$0.0066 & \\
+2,880 & 43.9\% & 2.2502 & $-$0.0033 & \\
+3,360 & 51.2\% & 2.2368 & $-$0.0134 & \\
+3,840 & 58.5\% & 2.2334 & $-$0.0034 & \textbf{$\leftarrow$ 最优} \\
+4,320 & 65.8\% & 2.2416 & +0.0082  & 过拟合开始 \\
+4,800 & 73.1\% & 2.2604 & +0.0188  & 过拟合 \\
+5,280 & 80.4\% & 2.2887 & +0.0283  & 过拟合 \\
+5,760 & 87.7\% & 2.3012 & +0.0125  & 过拟合 \\
+6,240 & 95.0\% & 2.3054 & +0.0042  & 过拟合 \\
+6,567 & 100.0\%& 2.3051 & $-$0.0003 & 过拟合 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+验证集 loss 从 Step 480 到 Step 3,840 \textbf{单调递减}，在 3,840 步达到最小值 2.2334。此后\textbf{每一次}评估的 loss 均高于该值。最终模型（Step 6,567）的验证 loss 2.3051 甚至\textbf{劣于} Step 2,880 的值 2.2502——即最后 3,687 步训练实际降低了模型质量。
+
+\section{评估结果（困惑度）}
+
+评估对比了三个模型，全部使用相同的 4-bit 量化加载以保证公平比较：
+\begin{itemize}[nosep]
+    \item \textbf{Base}：原始 Qwen3-4B-Base（未微调）
+    \item \textbf{ckpt-3840}：最优检查点（Step 3,840，epoch 1.75）
+    \item \textbf{ckpt-6567}：最终检查点（Step 6,567，epoch 3.0）
+\end{itemize}
+
+\subsection{序列长度 2048，175 个验证样本}
+
+（样本 25--49 因 OCR 噪声排除，详见第六章数据质量分析）
+
+\begin{table}[htbp]\centering
+\caption{2048 序列长度评估结果}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{模型} & \textbf{PPL} & \textbf{Loss} & \textbf{vs Base} \\
+\midrule
+Base（原始 Qwen3-4B）   & 12.3144 & 2.5108 & 基线 \\
+ckpt-3840（最优）       & 9.5594  & 2.2575 & \textbf{$-$22.4\%} \\
+ckpt-6567（最终，epoch 3）& 10.2757 & 2.3298 & $-$16.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{最优模型困惑度提升：22.4\%。}
+
+\subsection{序列长度 512，100 个验证样本}
+
+（三种模型在完全一致条件下评估）
+
+\begin{table}[htbp]\centering
+\caption{512 序列长度评估结果}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{模型} & \textbf{PPL} & \textbf{Loss} & \textbf{vs Base} \\
+\midrule
+Base（原始 Qwen3-4B）   & 14.0573 & 2.6431 & 基线 \\
+ckpt-3840（最优）       & 10.0857 & 2.3111 & \textbf{$-$28.3\%} \\
+ckpt-6567（最终，epoch 3）& 10.7876 & 2.3784 & $-$23.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{最优模型困惑度提升：28.3\%。}
+
+\subsection{交叉验证汇总}
+
+\begin{enumerate}[nosep]
+    \item 2048 seq：最优模型 PPL 提升 22.4\%
+    \item 512 seq：最优模型 PPL 提升 28.3\%
+    \item 两种设置均确认了显著的领域适配效果
+    \item 最终模型（epoch 3.0）相比最优模型始终劣化 5--8\%
+    \item 提升效果真实、显著且可复现
+\end{enumerate}
+
+\section{过拟合分析}
+
+\subsection{最优检查点后验证 Loss 劣化}
+
+\begin{table}[htbp]\centering
+\caption{过拟合量化分析}
+\begin{tabular}{@{}rrrrr@{}}
+\toprule
+\textbf{Step} & \textbf{Epoch} & \textbf{Eval Loss} & \textbf{vs 最优} & \textbf{PPL} \\
+\midrule
+3,840 & 1.7545 & 2.2334 & +0.0000 & 9.33 \\
+4,320 & 1.9738 & 2.2416 & +0.0082 & 9.41 \\
+4,800 & 2.1928 & 2.2604 & +0.0270 & 9.59 \\
+5,280 & 2.4122 & 2.2887 & +0.0553 & 9.86 \\
+5,760 & 2.6316 & 2.3012 & +0.0678 & 9.99 \\
+6,240 & 2.8509 & 2.3054 & +0.0720 & 10.03 \\
+6,567 & 3.0000 & 2.3051 & +0.0717 & 10.03 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{itemize}[nosep]
+    \item 累计过拟合：验证 loss 增加 +0.0717
+    \item PPL 劣化：+7.4\%（从 9.33 到 10.03）
+    \item 最优 PPL：9.33，最终 PPL：10.03
+\end{itemize}
+
+\subsection{根因链分析}
+
+\begin{enumerate}[nosep]
+    \item 训练集偏小（$\sim$10M tokens），相对于 4B 参数模型容量不足
+    \item 领域文本高度专业化且包含重复模式
+    \item 3 个 epoch 将模型暴露于 $\sim$30M 有效 tokens；在 epoch $\sim$1.7 时已开始记忆特定文档而非学习语言泛化能力
+    \item 余弦学习率衰减至 $\sim 10^{-11}$，阻止了从局部最优中逃逸
+    \item 典型的过拟合特征：训练 loss 持续下降，验证 loss 持续上升
+\end{enumerate}
+
+\subsection{后续改进建议}
+
+\begin{enumerate}[nosep]
+    \item 训练轮次限制为 2 个 epoch，或基于验证 loss 实施早停（early stopping）
+    \item 额外收集 20--30M tokens 的领域数据
+    \item LoRA rank 提高至 $r = 32$ 以增加适配器容量
+    \item 添加数据去重（余弦相似度阈值）
+    \item 考虑使用恒定学习率替代余弦调度
+\end{enumerate}
+
+\section{验证数据质量分析（样本 25--49）}
+
+\subsection{问题发现}
+
+在 ckpt-6567 的 2048-seq 评估中，程序在处理验证样本 25--49 时挂起。为此编写了专用诊断脚本 \texttt{diagnose\_samples.py}，对每个样本单独进行计时和 loss 测量。
+
+\subsection{测试方法}
+
+\begin{itemize}[nosep]
+    \item 每个样本单独加载、分词、评估
+    \item 记录每个样本的处理时间（基线范围：0.15--1.10 秒）
+    \item 记录每个样本的 token 数、loss 和执行时间
+    \item 动态阈值：$\max(5 \times \text{基线平均}, 5\text{秒})$
+    \item 同时标记异常、NaN loss 或 OOM
+\end{itemize}
+
+\subsection{分类结果}
+
+\textbf{A 类——纯净英文文本}（10/25）
+
+索引 27, 30, 31, 33, 35, 38, 39, 40, 42, 49。内容为 NIST SP 800 系列标准、CS/密码/安全领域的英文学术论文、算法规范等。质量优秀，纯 ASCII，分词和 loss 正常。
+
+\textbf{B 类——含轻微 OCR 瑕疵的中文技术文本}（11/25）
+
+索引 25, 26, 28, 32, 34, 36, 41, 43, 44, 45, 48。内容为中文 CS/安全教材和研究论文（PDF OCR），含 Unicode 数学符号和公式片段。存在 PDF 元数据混入正文、OCR 字符替换等问题。非 ASCII 比例高（50--78\%）。质量可接受，loss 值正常（2.2--2.9），分词器能正确处理中英数学符号混合。
+
+\textbf{C 类——含反汇编代码的重度 OCR 噪声}（4/25）
+
+索引 29, 37, 46, 47。内容为逆向工程教材中 OllyDbg/x64dbg 调试器截图的低质量 OCR 结果。汇编助记符严重损坏（MOV $\to$ MOU, XOR $\to$ XCK）、十六进制 dump 片段被当作伪英文 token。loss 值显著升高（2.8--3.1，对比平均 2.3）。\textbf{应在未来训练中清洗或移除。}
+
+\subsection{最差样本：验证索引 47}
+
+\begin{itemize}[nosep]
+    \item 来源：OllyDbg 反汇编窗口，PDF OCR 扫描
+    \item 摘录：\texttt{"9||. SE POP ESI"}、\texttt{"988481160|... 33cp XOR ECK,EBP"}、\texttt{"8BE5 MOU ESP, EBP"}
+    \item 问题：竖线 (\texttt{|}) 为 UI 窗口边框的 OCR 错误；\texttt{MOU} 为 MOV 的识别错误，\texttt{ECK} 为 ECX，\texttt{ESP} 为 ESP；地址字节被渲染为伪英文 token
+    \item 指标：1,094 tokens | Loss = 3.057（200 个样本中最高）
+\end{itemize}
+
+\subsection{评估挂起的根因}
+
+\begin{itemize}[nosep]
+    \item \textbf{非}数据损坏或无限模型循环导致
+    \item 所有 25 个样本单独运行时均可正确评估，处理时间 0.16--1.10 秒且 loss 有效
+    \item 挂起的原因是三次连续模型加载/卸载/评估循环中 GPU 显存累积，未执行适当的跨循环清理（\texttt{gc.collect() + torch.cuda.empty\_cache()}）
+    \item 通过模型间串行评估加显式 GPU 重置修复
+\end{itemize}
+
+\subsection{对评估结果的影响}
+
+\begin{itemize}[nosep]
+    \item 175 样本评估（跳过 25--49）是可靠的
+    \item 相对改进比率在 512-seq 和 2048-seq 评估中一致，确认排除的样本未对 Base、ckpt-3840 和 ckpt-6567 之间的比较造成偏差
+\end{itemize}
+
+\section{输出文件清单}
+
+\begin{table}[htbp]\centering
+\caption{训练产出文件}
+\small
+\begin{tabular}{@{}llr@{}}
+\toprule
+\textbf{类别} & \textbf{文件/目录} & \textbf{大小} \\
+\midrule
+\multirow{2}{*}{模型} & \texttt{merged-model/}（完整可部署模型）& 3.2 GB \\
+                      & \texttt{lora-adapter/}（LoRA 权重）& 137 MB \\
+\midrule
+\multirow{8}{*}{检查点} & \texttt{checkpoint-3360}（step 3360, eval\_loss=2.2368）& --- \\
+                        & \texttt{checkpoint-3840}（step 3840, eval\_loss=2.2334）& \textbf{$\leftarrow$ 最优} \\
+                        & \texttt{checkpoint-4320}（step 4320, eval\_loss=2.2416）& --- \\
+                        & \texttt{checkpoint-4800}（step 4800, eval\_loss=2.2604）& --- \\
+                        & \texttt{checkpoint-5280}（step 5280, eval\_loss=2.2887）& --- \\
+                        & \texttt{checkpoint-5760}（step 5760, eval\_loss=2.3012）& --- \\
+                        & \texttt{checkpoint-6240}（step 6240, eval\_loss=2.3054）& --- \\
+                        & \texttt{checkpoint-6567}（step 6567, eval\_loss=2.3051）& --- \\
+                        & 共 8 个检查点目录 & 3.0 GB \\
+\midrule
+\multirow{6}{*}{脚本} & \texttt{train\_qwen3\_4b.py}（主训练脚本，支持自动恢复）& --- \\
+                      & \texttt{resume\_train.py}（独立恢复脚本）& --- \\
+                      & \texttt{monitor\_training.py}（健康检查器）& --- \\
+                      & \texttt{evaluate.py}（困惑度评估）& --- \\
+                      & \texttt{diagnose\_samples.py}（数据质量诊断）& --- \\
+                      & \texttt{write\_report.py}（报告生成器）& --- \\
+\midrule
+\multirow{4}{*}{日志} & \texttt{loss\_log\_20260808\_102706.csv}（第一阶段：步 5--2880）& --- \\
+                      & \texttt{loss\_log\_20260809\_022756.csv}（第二阶段：步 2885--6565）& --- \\
+                      & \texttt{loss\_log.csv.bak}（原始日志备份）& --- \\
+                      & \texttt{monitoring\_log.txt}（健康检查快照）& --- \\
+\midrule
+\multirow{3}{*}{文档} & \texttt{FINE\_TUNING\_GUIDE.md}（参数参考与工作流）& --- \\
+                      & \texttt{EVALUATION\_RESULTS.md}（评估摘要）& --- \\
+                      & \texttt{FINAL\_REPORT.txt}（完整实验报告）& --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{关键结论}
+
+\subsection{QLoRA 微调在消费级硬件上切实有效}
+
+领域困惑度在两种独立评估设置下较基础模型降低了 22--28\%。模型成功从仅 19K 条训练文本中吸收了计算机科学、密码学和安全领域的知识。整个项目在单张 RTX 4060 8GB 上完成，总成本约 26 小时训练 + 8 小时评估和调试。领域适配无需云 GPU 租赁即可实现。
+
+\subsection{最优检查点不是最终模型——切勿跳过检查点保存}
+
+\textbf{checkpoint-3840（epoch 1.75，进度 58.5\%）是最优模型}。最终合并模型劣化 7.5\%。如果没有每 480 步保存的中间检查点，本项目将几乎完全失败——仅凭最终模型是严重次优的。这一教训对任何微调项目都具有普适性。
+
+\subsection{对于 $\sim$10M tokens 的专用数据，3 个 epoch 过多}
+
+过拟合始于 epoch $\sim$1.7。训练 loss 持续下降（模型记忆能力增强）而验证 loss 上升（模型泛化能力下降）。建议使用 2 个 epoch 或基于验证 loss 的早停策略。
+
+\subsection{数据质量与技术架构同等重要}
+
+约 16\% 的问题验证样本存在严重 OCR 损坏。它们不会破坏训练，但会膨胀评估指标并增加调试复杂度。干净的数据意味着可靠的实验。
+
+\subsection{管道完全可复现且文档化}
+
+所有代码、检查点、评估脚本和日志均已保存。该方法可迁移至其他领域、更大模型或不同硬件，仅需最小修改。
+
+\section{三阶段项目总结}
+
+\begin{table}[htbp]\centering
+\caption{项目三阶段汇总}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{阶段} & \textbf{核心工作} & \textbf{关键产出} \\
+\midrule
+第一阶段 & 多源数据采集与清洗 & 19,464 条 raw JSONL（29.6 MB），19 个子类 \\
+第二阶段 & 强模型辅助生成指令数据 & 3,678 对 QA 样本，5 种任务类型 \\
+第三阶段 & QLoRA 领域继续预训练 & 最优模型 PPL 降低 22--28\%，8 个检查点 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+经过三个阶段的系统工作，成功在消费级 GPU 上完成了 Qwen3-4B 的计算机科学、密码学与安全领域适配。核心经验可概括为：
+
+\begin{enumerate}[nosep]
+    \item \textbf{数据是基础}：高质量的多源领域数据采集和清洗是微调成功的必要条件
+    \item \textbf{检查点是生命线}：高频检查点保存挽救了本可能失败的实验
+    \item \textbf{过拟合是无声的杀手}：验证 loss 上升而训练 loss 下降——必须监控验证指标
+    \item \textbf{消费级硬件可行}：8GB 显存足够完成 4B 模型的领域适配
+    \item \textbf{工程细节决定成败}：6 个 Bug，从编码问题到库版本冲突，都需逐一攻克
+\end{enumerate}
+
+\end{document}

@@ -1,0 +1,8 @@
+checkpoint-1920  step=1920  epoch=0.8774
+checkpoint-2400  step=2400  epoch=1.0964
+checkpoint-2880  step=2880  epoch=1.3158
+checkpoint-3360  step=3360  epoch=1.5351
+checkpoint-3840  step=3840  epoch=1.7545
+checkpoint-4320  step=4320  epoch=1.9738
+checkpoint-4800  step=4800  epoch=2.1928
+checkpoint-5280  step=5280  epoch=2.4122

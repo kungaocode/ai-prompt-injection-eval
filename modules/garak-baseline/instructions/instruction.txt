@@ -1,0 +1,9 @@
+测试指令
+curl http://192.168.31.152:11434/api/tags
+curl http://192.168.31.152:11434/api/generate \
+-d '{
+    "model":"qwen3:8b",
+    "prompt":"请解释RSA数字签名的原理",
+    "stream":false
+}'
+

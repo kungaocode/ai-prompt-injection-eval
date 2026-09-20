@@ -1,0 +1,366 @@
+"""
+QLoRA Continued Pretraining for Qwen3-4B-Base
+=============================================
+Fine-tuning Qwen3-4B-Base on domain-specific CS/crypto/security corpora
+using 4-bit quantization + LoRA adapters — optimized for RTX 4060 8 GB.
+
+Dataset — 19,464 records, ~31 M chars, ~10 M estimated tokens
+Format  — {"text": "..."}  (plain-text continued pretraining)
+
+Usage:  D:/conda/envs/qwen/python.exe train_qwen3_4b.py
+"""
+
+import os
+import json
+import glob
+import time
+
+# ── Patch transformers + torch 2.5.1 compatibility BEFORE any other imports ──
+# transformers >= 5.13 requires torch >= 2.6 for torch.load (CVE-2025-32434).
+# We have torch 2.5.1+cu121 (latest for CUDA 12.1) and our checkpoint files
+# are locally generated — trusted. Two patches needed:
+#   1. check_torch_load_is_safe — no-op the version gate (both source & trainer).
+#   2. _load_rng_state — torch 2.5.1 weights_only=True chokes on numpy dtypes;
+#      both rng_state.pth and optimizer.pt are local, trusted files.
+import transformers.utils.import_utils as _hf_iu
+import transformers.trainer as _hf_trainer
+_hf_iu.check_torch_load_is_safe = lambda: None
+_hf_trainer.check_torch_load_is_safe = lambda: None
+
+import torch
+# Interpose torch.load: use weights_only=False for local checkpoint files.
+_orig_torch_load = torch.load
+def _safe_load(*a, **kw):
+    kw["weights_only"] = False
+    return _orig_torch_load(*a, **kw)
+torch.load = _safe_load
+
+from datasets import Dataset
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    BitsAndBytesConfig,
+    TrainerCallback,
+)
+
+from peft import (
+    LoraConfig,
+    get_peft_model,
+    prepare_model_for_kbit_training,
+    TaskType,
+)
+from trl import SFTConfig, SFTTrainer
+
+# ── Anomaly detection callback ──────────────────────────────────────
+class NaNGuardCallback(TrainerCallback):
+    """Stop training on NaN/zero loss, and persist every log to a standalone file."""
+
+    def __init__(self, log_path: str):
+        self._log_path = log_path
+        # write header (append mode to not overwrite existing data)
+        if not os.path.exists(log_path):
+            with open(log_path, "w", encoding="utf-8") as fh:
+                fh.write("step,epoch,loss,grad_norm,learning_rate,entropy,mean_token_accuracy,timestamp\n")
+
+    def _write_entry(self, logs, step, tag="train"):
+        """Persist one log entry to the loss log file (not affected by tqdm)."""
+        import datetime as _dt
+        row = [
+            str(step),
+            str(logs.get("epoch", "")),
+            str(logs.get("loss", "")),
+            str(logs.get("grad_norm", "")),
+            str(logs.get("learning_rate", "")),
+            str(logs.get("entropy", "")),
+            str(logs.get("mean_token_accuracy", "")),
+            _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        ]
+        with open(self._log_path, "a", encoding="utf-8") as fh:
+            fh.write(",".join(row) + "\n")
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is None:
+            return
+        # Always persist
+        self._write_entry(logs, state.global_step)
+
+        loss = logs.get("loss")
+        grad_norm = logs.get("grad_norm")
+        if loss is not None and (loss != loss or loss <= 0.001):
+            control.should_training_stop = True
+        if grad_norm is not None and (grad_norm != grad_norm or grad_norm > 100):
+            control.should_training_stop = True
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        if metrics is None:
+            return
+        self._write_entry(metrics, state.global_step, tag="eval")
+        eval_loss = metrics.get("eval_loss")
+        if eval_loss is not None and (eval_loss != eval_loss or eval_loss <= 0.001):
+            control.should_training_stop = True
+
+
+# ── Paths ──────────────────────────────────────────────────────────
+MODEL_PATH = "E:/model/Qwen3-4B-Base"
+DATASET_DIR = "E:/model/raw_for_training"
+OUTPUT_DIR = "E:/model/Qwen3-4B-Base-finetuned"
+
+# ── Training hyperparameters ───────────────────────────────────────
+MAX_SEQ_LENGTH = 2048
+BATCH_SIZE = 1
+GRADIENT_ACCUMULATION = 8
+LEARNING_RATE = 2.5e-5
+WARMUP_STEPS = 0       # resume: warmup already completed
+NUM_EPOCHS = 3
+MAX_GRAD_NORM = 0.3
+LOGGING_STEPS = 5
+SAVE_STEPS = 480        # ~2 hours between checkpoints (15s × 480 = 7200s)
+SAVE_TOTAL_LIMIT = 20   # keep many checkpoints for experiment evaluation
+
+# ── LoRA hyperparameters ───────────────────────────────────────────
+LORA_R = 16
+LORA_ALPHA = 32
+LORA_DROPOUT = 0.05
+TARGET_MODULES = [
+    "q_proj", "k_proj", "v_proj", "o_proj",
+    "gate_proj", "up_proj", "down_proj",
+]
+
+
+def find_latest_checkpoint(output_dir: str) -> str | None:
+    """Return the path to the highest-step checkpoint, or None."""
+    pattern = os.path.join(output_dir, "checkpoint-*")
+    candidates = sorted(
+        glob.glob(pattern),
+        key=lambda p: int(os.path.basename(p).split("-")[-1]),
+    )
+    if not candidates:
+        return None
+    return candidates[-1]
+
+
+def load_and_prepare_dataset(data_dir: str, tokenizer):
+    """Load all JSONL files, tokenize, return train/eval splits."""
+    records = []
+    total_chars = 0
+    for root, _dirs, files in os.walk(data_dir):
+        for fname in files:
+            if not fname.endswith(".jsonl"):
+                continue
+            fpath = os.path.join(root, fname)
+            with open(fpath, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        text = obj.get("text", "")
+                        if text and len(text) > 50:
+                            records.append({"text": text})
+                            total_chars += len(text)
+                    except json.JSONDecodeError:
+                        continue
+
+    dataset = Dataset.from_list(records)
+    print(f"Loaded {len(dataset)} records, {total_chars:,} total chars")
+    print(f"Estimated tokens: ~{int(total_chars / 3.5):,}")
+
+    # Tokenize
+    def tokenize_fn(examples):
+        return tokenizer(
+            examples["text"],
+            truncation=True,
+            max_length=MAX_SEQ_LENGTH,
+        )
+
+    dataset = dataset.map(
+        tokenize_fn,
+        batched=True,
+        remove_columns=["text"],
+        desc="Tokenizing",
+    )
+
+    # 90/10 split
+    split = dataset.train_test_split(test_size=0.1, seed=42)
+    return split["train"], split["test"]
+
+
+def main():
+    print("=" * 60)
+    print("QLoRA Continued Pretraining: Qwen3-4B-Base")
+    print(f"Model:   {MODEL_PATH}")
+    print(f"Dataset: {DATASET_DIR}")
+    print(f"GPU: {torch.cuda.get_device_name(0)}")
+    print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory // 1024**3} GB")
+    print(f"Torch: {torch.__version__}")
+    print("=" * 60)
+
+    # ── Auto-detect checkpoint for resume ──────────────────────────
+    resume_checkpoint = find_latest_checkpoint(OUTPUT_DIR)
+
+    if resume_checkpoint:
+        print(f"\n>>> Resume checkpoint detected: {resume_checkpoint}")
+        # Read trainer_state to show where we left off
+        state_file = os.path.join(resume_checkpoint, "trainer_state.json")
+        if os.path.exists(state_file):
+            with open(state_file, "r") as fh:
+                prev_state = json.load(fh)
+            prev_step = prev_state.get("global_step", "?")
+            prev_epoch = prev_state.get("epoch", "?")
+            prev_max = prev_state.get("max_steps", "?")
+            print(f"    Previous global_step = {prev_step}, epoch = {prev_epoch:.4f}, max_steps = {prev_max}")
+            if isinstance(prev_step, int) and isinstance(prev_max, int):
+                remaining = prev_max - prev_step
+                eta_h = remaining * 14 / 3600
+                print(f"    Remaining steps = {remaining} (~{eta_h:.1f}h at ~14s/step)")
+    else:
+        print("\n>>> No checkpoint found — starting fresh training.")
+
+    # 1. Tokenizer
+    print("\n[1/3] Loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # 2. Load & tokenize dataset
+    print("[2/3] Loading dataset...")
+    train_dataset, eval_dataset = load_and_prepare_dataset(DATASET_DIR, tokenizer)
+    print(f"Train: {len(train_dataset):,}, Eval: {len(eval_dataset):,}")
+
+    # Run
+    print("[3/3] Loading model + LoRA...")
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
+    )
+
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_PATH,
+        quantization_config=bnb_config,
+        device_map="auto",
+        trust_remote_code=True,
+        dtype=torch.float16,
+        attn_implementation="sdpa",
+    )
+    model = prepare_model_for_kbit_training(model)
+    model.gradient_checkpointing_enable()
+
+    lora_config = LoraConfig(
+        r=LORA_R,
+        lora_alpha=LORA_ALPHA,
+        target_modules=TARGET_MODULES,
+        lora_dropout=LORA_DROPOUT,
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
+    )
+    model = get_peft_model(model, lora_config)
+
+    # NOTE: adapter weights are restored by Trainer._load_from_checkpoint
+    # when resume_from_checkpoint is passed to trainer.train(). That path
+    # handles PEFT key remapping correctly; manual loading is not needed.
+    model.print_trainable_parameters()
+
+    # ── Timestamped loss log (avoid overwriting previous runs) ──────
+    loss_log_path = os.path.join(
+        OUTPUT_DIR,
+        f"loss_log_{time.strftime('%Y%m%d_%H%M%S')}.csv",
+    )
+
+    # 4. SFT Config (TRL >= 1.8)
+    sft_config = SFTConfig(
+        output_dir=OUTPUT_DIR,
+        per_device_train_batch_size=BATCH_SIZE,
+        per_device_eval_batch_size=1,
+        gradient_accumulation_steps=GRADIENT_ACCUMULATION,
+        learning_rate=LEARNING_RATE,
+        warmup_steps=WARMUP_STEPS,
+        num_train_epochs=NUM_EPOCHS,
+        logging_steps=LOGGING_STEPS,
+        save_steps=SAVE_STEPS,
+        save_total_limit=SAVE_TOTAL_LIMIT,
+        eval_strategy="steps",
+        eval_steps=SAVE_STEPS,
+        logging_dir=os.path.join(OUTPUT_DIR, "logs"),
+        fp16=False,
+        bf16=False,
+        lr_scheduler_type="cosine",
+        optim="adamw_torch",
+        dataloader_num_workers=0,
+        report_to="none",
+        seed=42,
+        remove_unused_columns=False,
+        save_only_model=False,
+        load_best_model_at_end=False,
+        dataset_text_field="text",
+        packing=False,
+        max_grad_norm=MAX_GRAD_NORM,
+    )
+
+    # 5. Trainer
+    trainer = SFTTrainer(
+        model=model,
+        args=sft_config,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        processing_class=tokenizer,       # TRL >= 1.8 uses processing_class
+        formatting_func=None,             # use dataset_text_field from config
+        callbacks=[NaNGuardCallback(loss_log_path)],
+    )
+
+    print(f"\nLoss log: {loss_log_path}")
+    print("\nStarting training...")
+    if resume_checkpoint:
+        print(f"(Resuming FULL state from {resume_checkpoint}:")
+        print(f"  [-] adapter weights  -- loaded from checkpoint by Trainer")
+        print(f"  [-] optimizer state  -- AdamW momentum restored")
+        print(f"  [-] scheduler state  -- cosine LR curve continued")
+        print(f"  [-] global_step      -- restored from trainer_state.json)")
+    else:
+        print("(Fresh training — no checkpoint found)")
+
+    train_result = trainer.train(resume_from_checkpoint=resume_checkpoint)
+
+    print("\n" + "=" * 60)
+    print("Training complete!")
+    print(f"Total steps: {train_result.global_step}")
+    print(f"Training loss: {train_result.training_loss:.4f}")
+    print("=" * 60)
+
+    # Save LoRA adapter
+    adapter_path = os.path.join(OUTPUT_DIR, "lora-adapter")
+    print(f"\nSaving LoRA adapter to {adapter_path}")
+    trainer.model.save_pretrained(adapter_path)
+    tokenizer.save_pretrained(adapter_path)
+
+    # Merge & save full model (dequantizes from 4-bit → may use significant VRAM)
+    merged_path = os.path.join(OUTPUT_DIR, "merged-model")
+    print(f"Merging LoRA into base → {merged_path}")
+    import gc as _gc
+    merged_model = trainer.model.merge_and_unload()
+    merged_model.save_pretrained(merged_path, safe_serialization=True)
+    tokenizer.save_pretrained(merged_path)
+    # Free merged-model VRAM before exiting
+    del merged_model
+    _gc.collect()
+    torch.cuda.empty_cache()
+
+    print("\n" + "=" * 60)
+    print("Outputs:")
+    print(f"  LoRA adapter: {adapter_path}")
+    print(f"  Merged model: {merged_path}")
+    print(f"  Checkpoints:  {OUTPUT_DIR}")
+    print(f"  Loss log:     {loss_log_path}")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
+    try:
+        multiprocessing.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
+    main()

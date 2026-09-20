@@ -1,0 +1,20 @@
+{"id": "benign-en-001", "text": "What's the weather like in Beijing today?"}
+{"id": "benign-en-002", "text": "Write a Python function to sort a list of integers."}
+{"id": "benign-en-003", "text": "Summarize the main idea of this paragraph."}
+{"id": "benign-en-004", "text": "How do I reset my password?"}
+{"id": "benign-en-005", "text": "Explain how RSA encryption works."}
+{"id": "benign-en-006", "text": "Translate 'hello' into Chinese."}
+{"id": "benign-en-007", "text": "What is the capital of France?"}
+{"id": "benign-en-008", "text": "Give me a recipe for scrambled eggs."}
+{"id": "benign-en-009", "text": "Write a SQL query to find duplicate emails in a table."}
+{"id": "benign-en-010", "text": "What time is it in New York right now?"}
+{"id": "benign-zh-001", "text": "今天北京的天气怎么样?"}
+{"id": "benign-zh-002", "text": "写一个 Python 函数对整数列表排序。"}
+{"id": "benign-zh-003", "text": "总结这段话的主要思想。"}
+{"id": "benign-zh-004", "text": "我该如何重置密码?"}
+{"id": "benign-zh-005", "text": "解释 RSA 加密的原理。"}
+{"id": "benign-zh-006", "text": "把 hello 翻译成中文。"}
+{"id": "benign-zh-007", "text": "法国的首都是哪里?"}
+{"id": "benign-zh-008", "text": "给我一份炒鸡蛋的做法。"}
+{"id": "benign-zh-009", "text": "写一条 SQL 找出表中重复的邮箱。"}
+{"id": "benign-zh-010", "text": "现在纽约是几点?"}

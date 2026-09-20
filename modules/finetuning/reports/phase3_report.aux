@@ -1,0 +1,57 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand*\HyPL@Entry[1]{}
+\HyPL@Entry{0<</S/D>>}
+\@writefile{toc}{\contentsline {section}{\numberline {1}实验概述}{1}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.1}实验目标}{1}{subsection.1.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.2}基础模型信息}{1}{subsection.1.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.3}QLoRA 配置}{1}{subsection.1.3}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Qwen3-4B-Base 架构参数}}{2}{table.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces QLoRA 配置参数}}{2}{table.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.4}硬件与软件环境}{3}{subsection.1.4}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces 实验环境}}{3}{table.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.5}训练数据}{3}{subsection.1.5}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces 训练数据统计}}{3}{table.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.6}训练超参数}{3}{subsection.1.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}训练过程与关键技术问题}{3}{section.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces 训练超参数配置}}{4}{table.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}第一阶段：初始训练（Step 0 $\to $ 2,880）}{4}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}第二阶段：恢复尝试失败（多次，浪费 $\sim $12 小时）}{4}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}六个关键 Bug 的发现与修复}{4}{subsection.2.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}第三阶段：成功恢复并完成训练（Step 2,885 $\to $ 6,567）}{6}{subsection.2.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}训练损失分析}{6}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}按 Epoch 统计训练损失}{6}{subsection.3.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces 训练损失按 Epoch 统计}}{6}{table.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}按 500 步窗口统计训练损失}{7}{subsection.3.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces 训练损失按 500 步窗口统计}}{7}{table.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}验证集 Loss 趋势}{7}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}评估结果（困惑度）}{7}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}序列长度 2048，175 个验证样本}{7}{subsection.4.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces 验证集 Loss 完整趋势}}{8}{table.8}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces 2048 序列长度评估结果}}{8}{table.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}序列长度 512，100 个验证样本}{9}{subsection.4.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {10}{\ignorespaces 512 序列长度评估结果}}{9}{table.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}交叉验证汇总}{9}{subsection.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}过拟合分析}{9}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}最优检查点后验证 Loss 劣化}{9}{subsection.5.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {11}{\ignorespaces 过拟合量化分析}}{9}{table.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}根因链分析}{10}{subsection.5.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}后续改进建议}{10}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}验证数据质量分析（样本 25--49）}{10}{section.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}问题发现}{10}{subsection.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}测试方法}{10}{subsection.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}分类结果}{10}{subsection.6.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.4}最差样本：验证索引 47}{11}{subsection.6.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.5}评估挂起的根因}{11}{subsection.6.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.6}对评估结果的影响}{11}{subsection.6.6}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {12}{\ignorespaces 训练产出文件}}{12}{table.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}输出文件清单}{13}{section.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}关键结论}{13}{section.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.1}QLoRA 微调在消费级硬件上切实有效}{13}{subsection.8.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}最优检查点不是最终模型——切勿跳过检查点保存}{13}{subsection.8.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.3}对于 $\sim $10M tokens 的专用数据，3 个 epoch 过多}{13}{subsection.8.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.4}数据质量与技术架构同等重要}{13}{subsection.8.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.5}管道完全可复现且文档化}{13}{subsection.8.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}三阶段项目总结}{13}{section.9}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {13}{\ignorespaces 项目三阶段汇总}}{14}{table.13}\protected@file@percent }
+\gdef \@abspage@last{14}

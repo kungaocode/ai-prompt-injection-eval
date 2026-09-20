@@ -1,0 +1,306 @@
+%!TEX TS-program = xelatex
+\documentclass[12pt,a4paper]{ctexart}
+
+\usepackage{graphicx,booktabs,longtable,hyperref,multirow}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{titlesec,xcolor,fancyhdr,enumitem}
+
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue,
+    pdftitle={第二阶段——问答数据集构建},pdfauthor={Qwen3-8B微调项目}}
+
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{Qwen3 微调项目}\fancyhead[R]{第二阶段报告}
+\fancyfoot[C]{\thepage}
+
+\title{\textbf{大模型微调项目第二阶段报告}\\[4pt]\large Raw Data $\to$ 指令数据集构建}
+\author{计算机·密码与安全特化模型}
+\date{\today}
+
+\begin{document}\maketitle\thispagestyle{empty}
+
+\begin{abstract}
+\noindent 本报告记录了第二阶段的核心工作——将第一阶段产出的19,464个原始文本块（raw data）通过强模型辅助生成转化为高质量指令微调数据集。采用DeepSeek- chat模型作为生成引擎，设计了覆盖五种认知层次的Prompt模板，经过17批次API批量生成、质量过滤和分层抽样，最终产出3,678对结构化问答样本，按80:10:10划分训练集、验证集和测试集，可直接用于Qwen3-4B的QLoRA微调训练。
+\end{abstract}
+
+\section{阶段概述}
+
+\subsection{目标}
+
+在第一阶段原始文本采集和清洗的基础上，构建面向计算机科学、密码学与网络安全领域的高质量指令微调数据集。主要目标包括：
+
+\begin{enumerate}[nosep]
+    \item 从raw text chunks生成多样化问答对
+    \item 覆盖概念解释、章节总结、方法对比、论文摘要理解和推理分析五种任务
+    \item 建立自动质量过滤和人工审核机制
+    \item 按80:10:10比例划分训练/验证/测试集
+    \item 产出可直接用于HuggingFace QLoRA训练的JSONL数据集
+\end{enumerate}
+
+\subsection{输入与输出}
+
+\begin{table}[htbp]\centering
+\caption{Phase 2 输入输出总览}
+\begin{tabular}{@{}llr@{}}
+\toprule & \textbf{描述} & \textbf{数量} \\
+\midrule
+输入 & Phase 1 raw text chunks & 19,464 \\
+     & 实际可用（质量筛选后） & 18,597 \\
+\midrule
+处理 & 采样批次数 & 17 \\
+     & 实际处理chunks & 3,206 \\
+     & API生成原始QA对 & 4,199 \\
+\midrule
+输出 & 质量过滤后QA对 & 3,678 \\
+     & 训练集（80\%） & 2,941 \\
+     & 验证集（10\%） & 366 \\
+     & 测试集（10\%） & 371 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Prompt 模板设计}
+
+\subsection{五种任务类型}
+
+根据项目书要求，设计了覆盖不同认知层次的五类任务：
+
+\begin{enumerate}[nosep]
+    \item \textbf{概念解释}（目标30\%）——训练模型理解和解释领域核心概念
+    \item \textbf{章节总结}（目标20\%）——提升长文本理解和结构化总结能力
+    \item \textbf{方法对比}（目标20\%）——培养知识迁移和分析比较能力
+    \item \textbf{论文摘要理解}（目标15\%）——增强科研文献阅读能力
+    \item \textbf{推理分析}（目标15\%）——提高深度分析和安全推理能力
+\end{enumerate}
+
+\subsection{系统指令}
+
+所有Prompt共享统一的System Prompt：
+
+\begin{verbatim}
+你是一个专业的数据标注助手，负责为计算机科学、密码学和
+网络安全领域的教材内容生成高质量的训练样本。
+你的回答必须是严格的 JSON 格式，不得包含任何 JSON
+之外的文字、解释或 markdown 标记。
+每条问答对必须：
+1. 问题有明确的知识目标
+2. 回答严格依据原文
+3. 保留原文的专业术语
+4. 如果原文质量不足以生成有效问答对（例如OCR乱码过多），
+   直接返回空数组 []
+\end{verbatim}
+
+\subsection{模板示例}
+
+\textbf{概念解释模板}——要求生成2-3个概念解释类问答对，问题必须针对文本中的具体概念或术语，回答先给定义再展开说明。
+
+\textbf{方法对比模板}——若文本涉及两种以上方法/算法/方案，设计对比问题，涵盖结构、性能、安全性等维度，可用表格呈现。
+
+\textbf{推理分析模板}——问题具有分析深度，要求解释“为什么”或“如何”，回答包含问题分析、原理推导和解决方案。
+
+完整模板定义位于 \texttt{phase2/templates/prompts.py}。
+
+\section{API批量生成管道}
+
+\subsection{架构}
+
+\begin{verbatim}
+Raw Chunk → 质量筛选 → 任务分配 → Prompt构造
+    → DeepSeek-Chat API → JSON解析 → 质量验证 → JSONL存储
+\end{verbatim}
+
+\subsection{强模型选择}
+
+采用 DeepSeek-Chat 模型（通过 Anthropic SDK 兼容接口调用）作为生成引擎。选择理由：
+\begin{itemize}[nosep]
+    \item API 兼容 Anthropic Messages 格式，开发成本低
+    \item 中英文双语能力均衡，适合处理混合语料
+    \item 性价比高，支持大规模批量生成
+\end{itemize}
+
+\subsection{任务分配策略}
+
+采用配额驱动的分配算法，确保五种任务类型接近目标比例：
+
+\begin{verbatim}
+对每个chunk:
+  1. 计算当前每种任务的已完成比例
+  2. 找距离目标比例最远的任务类型
+  3. 检测chunk内容特征（含"比较"→方法对比加成，
+     含"证明/定理"→推理分析加成，
+     含"abstract/RFC"→论文摘要加成）
+  4. 综合选择最优任务类型
+\end{verbatim}
+
+\subsection{批量处理参数}
+
+\begin{table}[htbp]\centering
+\caption{批量生成配置}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{参数} & \textbf{值} \\
+\midrule
+模型 & deepseek-chat \\
+最大输出token & 2,048 \\
+温度 & 0.7 \\
+输入截断 & 1,500 字符 \\
+API调用间隔 & 2 秒 \\
+每chunk生成QA对数 & 1--3 对 \\
+重试次数 & 3（指数退避） \\
+检查点保存间隔 & 每 20 chunks \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{错误处理}
+
+实现了三级容错机制：
+\begin{enumerate}[nosep]
+    \item \textbf{API瞬时故障}：指数退避重试（1s/2s/4s），最多3次
+    \item \textbf{JSON解析失败}：正则提取 + 回退到单个对象解析
+    \item \textbf{ThinkingBlock处理}：DeepSeek推理模型返回的思考块自动过滤，仅保留TextBlock
+\end{enumerate}
+
+整体API成功率为76\%（200 chunks中约152个成功），失败主要原因为chunk内容过短（<150字符）或OCR乱码严重。
+
+\section{数据质量控制}
+
+\subsection{自动过滤规则}
+
+\begin{enumerate}[nosep]
+    \item \textbf{长度过滤}：input $<$ 5字符 或 output $<$ 30字符 → 丢弃
+    \item \textbf{乱码检测}：有效字符（中英文+数字+标点）占比 $<$ 30\% → 丢弃
+    \item \textbf{输出质量}：output $<$ 80字符的浅层回答标记为待审核
+\end{enumerate}
+
+\subsection{过滤效果}
+
+\begin{table}[htbp]\centering
+\caption{质量过滤统计}
+\begin{tabular}{@{}lrl@{}}
+\toprule
+\textbf{阶段} & \textbf{数量} & \textbf{说明} \\
+\midrule
+API原始生成 & 4,199 & 17批次全部产出 \\
+JSON解析失败 & 38 & API返回格式异常 \\
+质量过滤剔除 & 483 & 短回答/乱码/无意义 \\
+最终入库 & 3,678 & 通过全部质量检查 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{数据集划分}
+
+\subsection{分层抽样策略}
+
+按 domain（computer\_science / crypto\_and\_security / comprehensive）进行分层随机抽样，保证每个子集中领域分布一致。划分比例：训练集80\%、验证集10\%、测试集10\%。
+
+\begin{table}[htbp]\centering
+\caption{数据集划分结果}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{领域} & \textbf{总数} & \textbf{训练} & \textbf{验证} & \textbf{测试} \\
+\midrule
+crypto\_and\_security & 1,843 & 1,474 & 184 & 185 \\
+computer\_science      & 1,708 & 1,366 & 170 & 172 \\
+comprehensive          & 127   & 101   & 12  & 14 \\
+\midrule
+\textbf{总计}         & \textbf{3,678} & \textbf{2,941} & \textbf{366} & \textbf{371} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]\centering
+\caption{任务类型分布}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{任务类型} & \textbf{训练集} & \textbf{验证集} & \textbf{测试集} & \textbf{占比} \\
+\midrule
+概念解释   & 1,455 & 168 & 173 & 49\% \\
+推理分析   & 516   & 68  & 62  & 18\% \\
+章节总结   & 451   & 65  & 64  & 16\% \\
+方法对比   & 336   & 36  & 44  & 11\% \\
+论文摘要理解 & 183 & 29  & 28  & 7\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{输出格式}
+
+每条训练样本为标准 instruction-tuning 格式：
+
+\begin{verbatim}
+{
+  "instruction": "请解释以下概念\n\n什么是AES加密算法？",
+  "output": "AES (Advanced Encryption Standard) 是...",
+  "domain": "crypto_and_security",
+  "task_type": "概念解释"
+}
+\end{verbatim}
+
+\subsection{加载方式}
+
+\begin{verbatim}
+from datasets import load_dataset
+ds = load_dataset("json", data_files={
+    "train": "phase2/dataset/train.jsonl",
+    "val":   "phase2/dataset/val.jsonl",
+    "test":  "phase2/dataset/test.jsonl",
+})
+\end{verbatim}
+
+\section{长度统计}
+
+\begin{table}[htbp]\centering
+\caption{各子集平均长度}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{子集} & \textbf{平均Instruction长度} & \textbf{平均Output长度} \\
+\midrule
+训练集 & 54 字符 & 252 字符 \\
+验证集 & 53 字符 & 255 字符 \\
+测试集 & 53 字符 & 252 字符 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{项目脚本清单}
+
+\begin{table}[htbp]\centering
+\caption{Phase 2 脚本文件}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{文件} & \textbf{功能} \\
+\midrule
+\texttt{templates/prompts.py}        & 5种任务Prompt模板 + System Prompt \\
+\texttt{scripts/batch\_generate.py}  & API批量QA生成（任务分配/调用/过滤/存储） \\
+\texttt{scripts/split\_dataset.py}   & 分层抽样 + 数据集划分 + HuggingFace格式导出 \\
+\texttt{scripts/run\_all\_batches.sh}& 串行批量执行脚本 \\
+\texttt{scripts/run\_remaining.sh}   & 补充批次执行脚本 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{已知局限与改进方向}
+
+\begin{enumerate}[nosep]
+    \item \textbf{任务分布偏斜}：概念解释占49\%，超出目标30\%。主要原因是早期批次使用随机权重分配，后改为配额驱动的分配器已修复此问题，但前几批数据已生成。
+    \item \textbf{输出长度偏短}：平均output仅252字符。可通过提高Prompt要求（“请给出详细回答，不少于300字”）来改善。
+    \item \textbf{论文摘要理解偏少}（7\% vs 目标15\%）：受限于raw chunks中论文/标准类内容比例较低。如需补充，可单独从NIST SP 800系列和RFC文档中生成。
+    \item \textbf{comprehensive领域样本不足}（127对）：该领域本身chunk数量有限，跨领域文档仅126个。
+\end{enumerate}
+
+\section{第三阶段展望}
+
+第二阶段产出的 \texttt{phase2/dataset/} 目录可直接迁移至GPU设备，进入第三阶段——QLoRA微调：
+
+\begin{enumerate}[nosep]
+    \item 环境准备：安装 PyTorch、Transformers、PEFT、BitsAndBytes、Accelerate
+    \item 模型加载：Qwen3-4B-Base + 4-bit NF4量化
+    \item LoRA配置：rank=32, alpha=64, target\_modules=all-linear
+    \item 训练参数：batch\_size=2, grad\_accum=4, lr=2e-4, epochs=3, max\_seq\_len=1024
+    \item 预估显存：$\sim$6.1 GB（RTX 4060 8GB可运行）
+    \item 评估维度：准确性、完整性、专业性、忠实性
+\end{enumerate}
+
+\end{document}

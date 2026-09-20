@@ -1,0 +1,338 @@
+%!TEX TS-program = xelatex
+\documentclass[12pt,a4paper]{ctexart}
+
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{titlesec}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    pdftitle={第一阶段数据收集与整理报告},
+    pdfauthor={Qwen3-8B微调项目},
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{Qwen3-8B 微调项目}
+\fancyhead[R]{第一阶段报告}
+\fancyfoot[C]{\thepage}
+
+\title{\textbf{大模型微调项目第一阶段报告}\\[4pt]
+       \large 数据来源、采集与整理}
+\author{计算机·密码与安全特化模型}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+\begin{abstract}
+\noindent 本报告记录了基于 Qwen3-8B 的计算机、密码学与安全领域大模型微调项目的第一阶段工作——数据来源、采集与整理。项目通过多源爬取、PDF教材处理（原生文字提取与OCR）等方式，共采集处理 63 本 PDF、804 篇百科词条、60 篇 RFC 文档、30 篇 OWASP 安全指南及 24 条 NIST 存根，最终产出 19,464 篇结构化原始文本块（29.6 MB），统一以最简 JSONL 格式（\texttt{\{"text": "..."\}}）输出，可直接用于后续问答对构建与指令微调训练。
+\end{abstract}
+
+\section{项目概述}
+
+本项目以本地部署的 Qwen3-8B 作为基础模型，聚焦于计算机科学、密码学与网络安全三大领域，通过领域数据收集、文本提取、结构化整理，构建面向教材解读与专业知识问答的微调数据集。
+
+第一阶段的\textbf{核心目标}是：从多种来源收集高质量原始语料，统一清洗、分块、格式化，为后续指令数据构建和 LoRA/QLoRA 微调提供结构化的训练基础。
+
+\section{数据来源总览}
+
+\subsection{来源分类}
+
+数据来源分为三大类：\textbf{公开网络资源}（主动爬取）、\textbf{权威标准文档}（下载与提取）、\textbf{专业教材}（PDF 处理）。
+
+\begin{table}[htbp]
+\centering
+\caption{数据来源汇总}
+\label{tab:sources}
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+\textbf{类别} & \textbf{来源} & \textbf{数量} & \textbf{大小} & \textbf{方式} \\
+\midrule
+公开网络 & Wikipedia (中英) & 804 篇 & 0.95 MB & API 爬取 \\
+         & RFC Editor       & 60 篇  & 5.94 MB & 直接下载 \\
+         & OWASP            & 30 篇  & 0.87 MB & GitHub Raw \\
+         & NIST CSRC        & 24 条  & 0.01 MB & API 爬取(存根) \\
+\midrule
+权威标准 & NIST SP 800 系列  & 30 本  & ---    & 直链下载+提取 \\
+         & NIST FIPS 系列   & 9 本   & ---    & 直链下载+提取 \\
+\midrule
+专业教材 & 计算机科学教材   & 7 本   & 3,865 chunks & PDF 原生/OCR \\
+         & 密码学教材       & 7 本   & 3,495 chunks & PDF 原生/OCR \\
+         & 安全类教材       & 9 本   & 3,775 chunks & PDF 原生/OCR \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{公开网络资源详情}
+
+\subsubsection*{Wikipedia}
+
+通过 Wikipedia API 抓取英文和中文两个语言的计算机科学、密码学、安全三大领域词条。每个领域下设若干子分类（如 algorithm, data\_structure, cryptography, computer\_security 等），每个分类最多抓取 50 篇词条。使用 API 的 extract 功能获取纯文本摘要。
+
+\begin{itemize}
+    \item 英文词条：覆盖 Computer Science (12 分类)、Cryptography (11 分类)、Security (13 分类)
+    \item 中文词条：覆盖 计算机科学、密码学、网络安全等 10 个分类
+    \item 平均长度：$\sim$950 字符/篇
+\end{itemize}
+
+\subsubsection*{RFC Editor}
+
+下载与密码学和安全相关的 RFC 文档全文。包括手动精选的 60 篇核心 RFC（TLS、PKI、SSH、IPsec、DNSSEC、OAuth、JWT 等）和关键词搜索补充。RFC 文档为完整协议规范，平均长度 $\sim$100,000 字符/篇，是数据集中最厚重的单篇文档。
+
+\subsubsection*{OWASP}
+
+从 OWASP GitHub 仓库获取 Cheat Sheet Series（32 篇）、Application Security Verification Standard (ASVS) 章节、Top 10 风险类别等安全实践指南。内容涵盖认证、授权、输入验证、XSS 防护、SQL 注入防护、密码存储、TLS 配置等。
+
+\subsubsection*{NIST CSRC}
+
+NIST 计算机安全资源中心（CSRC）网站为 React SPA 架构，自动化抓取受阻。当前仅通过 API 获取了 24 条出版物元数据存根（SP 800 系列 14 条、FIPS 系列 10 条）。完整内容通过 PDF 下载方式另行获取（见下节）。
+
+\subsection{权威标准文档——NIST PDF}
+
+为弥补 NIST 网站爬取困难的问题，直接从 \texttt{nvlpubs.nist.gov} 下载了 39 篇 NIST 出版物的 PDF 文件。这些均为英文原生文字 PDF，使用 pymupdf4llm 直接提取 markdown 后分块。
+
+\begin{itemize}
+    \item SP 800 系列（30 篇）：涵盖安全管理(53, 37)、密码学(38, 52, 56, 57, 90, 108, 131, 133, 175, 186)、网络安全(77, 161, 171, 190, 204, 207)、身份管理(63)
+    \item FIPS 系列（9 篇）：140-3(密码模块)、180-4(SHS)、186-5(DSS)、197(AES)、198-1(HMAC)、199(安全分类)、200(最低安全要求)、201-3(PIV)、202(SHA-3)
+\end{itemize}
+
+\subsection{专业教材 PDF}
+
+通过 mapping\_knowledge\_domain 子项目的 pdf\_slicer.py 工具处理教材 PDF。根据 PDF 的文字层特征分为两条处理路径：
+
+\begin{description}
+    \item[原生文字 PDF（5 本）] 使用 pymupdf4llm 直接提取结构化 markdown，速度快、质量高。包括：公钥密码学的数学基础（王小云）、算法数论、云计算安全技术与应用、云计算数据安全、网络空间安全战略。
+    \item[扫描版 PDF（18 本）] 使用 PyMuPDF 逐页渲染为图像，通过 Tesseract OCR（chi\_sim+eng）识别中文文字，经 CJK 字间空格修复和低内容页面过滤后分块。包括：王道408考研系列(4本)、TCP/IP详解、TAOCP、密码编码学与网络安全(Stallings)、应用密码学(Schneier)、深入浅出密码学(Paar)、计算机安全学(Gollmann) 等。
+\end{description}
+
+\section{数据处理流程}
+
+\subsection{整体架构}
+
+数据处理分为\textbf{三个主要管道}，最终汇聚为统一的 raw JSONL 格式：
+
+\begin{enumerate}
+    \item \textbf{爬虫管道}（wikipedia/rfc/owasp/nist）：API请求/直接下载 $\to$ HTML/Markdown清洗 $\to$ JSONL存储
+    \item \textbf{英文PDF管道}（NIST/原生英文）：pymupdf4llm提取 $\to$ 英文清洗(去连字符断行/页眉页脚) $\to$ 语义分块 $\to$ raw JSONL
+    \item \textbf{中文PDF管道}（教材/扫描版）：PyMuPDF渲染 $\to$ Tesseract OCR $\to$ CJK去空格 $\to$ 低内容页过滤 $\to$ 语义分块 $\to$ raw JSONL
+\end{enumerate}
+
+\subsection{文本清洗}
+
+\begin{itemize}
+    \item Wikipedia：去除引用标记 [N]、编辑标记 [edit]、目录魔法字 \_\_TOC\_\_，截断 References/See also/External links 章节
+    \item RFC：去除页眉（Network Working Group等）、页脚（[Page N]）、状态栏
+    \item OWASP：去除 YAML frontmatter 和 HTML 注释
+    \item 英文PDF：去连字符断行（hyphen- ation $\to$ hyphenation）、合并软换行、去独立页码行
+    \item 中文OCR：循环去除CJK字符间空格、标点前空格清理
+\end{itemize}
+
+\subsection{语义分块}
+
+分块策略：优先按 \#\# 标题边界分割，其次按段落（空行），再次按句子边界（。！？.!?）。块大小上限 1500 字符，相邻块 150 字符重叠（重叠用于上下文连贯，训练时可通过 deoverlap 去除）。
+
+\subsection{分类整理}
+
+通过基于关键词匹配加来源加权的分类器，将所有文档归入三个领域。密码学与安全合并为同一大类（\texttt{crypto\_and\_security}），因为安全架构本身包含密码实现。
+
+\section{最终数据集}
+
+\subsection{数据统计}
+
+\begin{table}[htbp]
+\centering
+\caption{最终 raw 数据集统计}
+\label{tab:final}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{领域} & \textbf{文档数} & \textbf{大小(MB)} & \textbf{子类数} \\
+\midrule
+computer\_science   & 6,221 & 8.3  & 8 \\
+crypto\_and\_security & 13,026 & 17.5 & 9 \\
+comprehensive       & 217   & 3.8  & 2 \\
+\midrule
+\textbf{总计}       & \textbf{19,464} & \textbf{29.6} & \textbf{19} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{各子类分布}
+\label{tab:subcats}
+\small
+\begin{tabular}{@{}llr@{}}
+\toprule
+\textbf{领域} & \textbf{子类} & \textbf{文档数} \\
+\midrule
+\multirow{8}{*}{computer\_science}
+    & algorithms\_and\_data\_structures  & 1,187 \\
+    & computer\_networks                  & 648 \\
+    & operating\_systems                  & 121 \\
+    & theory\_and\_discrete\_math          & 69 \\
+    & databases                           & 39 \\
+    & programming\_languages\_and\_se       & 38 \\
+    & computer\_architecture              & 20 \\
+    & artificial\_intelligence            & 13 \\
+    & (OCR教材chunks)                     & $\sim$4,086 \\
+\midrule
+\multirow{9}{*}{crypto\_and\_security}
+    & key\_management\_and\_pki            & 2,992 \\
+    & cryptographic\_algorithms           & 1,289 \\
+    & cryptographic\_foundations          & 1,229 \\
+    & network\_security                   & 525 \\
+    & authentication\_and\_access\_control & 503 \\
+    & security\_engineering               & 394 \\
+    & system\_security                    & 189 \\
+    & cryptographic\_protocols            & 93 \\
+    & web\_security                       & 53 \\
+    & (OCR教材chunks)                     & $\sim$5,759 \\
+\midrule
+\multirow{2}{*}{comprehensive}
+    & general                             & 163 \\
+    & cross\_domain                        & 55 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{输出格式}
+
+最终输出的训练数据采用\textbf{最简 JSONL 格式}，每行一个 JSON 对象，仅包含 \texttt{text} 字段：
+
+\begin{verbatim}
+{"text": "云计算环境是计算与存储并存的网络环境..."}
+{"text": "The Advanced Encryption Standard (AES) specifies..."}
+{"text": "公钥密码学的安全性基于数学困难问题..."}
+\end{verbatim}
+
+该格式相比完整元数据格式节省约 25\% 的存储空间和 token 开销，每行仅 12 字符的 JSON 包装。可直接通过 HuggingFace \texttt{datasets} 库加载：
+
+\begin{verbatim}
+from datasets import load_dataset
+ds = load_dataset("json", data_files="data/raw_for_training/
+                  crypto_and_security/data.jsonl")
+\end{verbatim}
+
+\subsection{数据目录结构}
+
+\begin{verbatim}
+data/raw_for_training/
+├── computer_science/
+│   ├── algorithms_and_data_structures.jsonl
+│   ├── computer_networks.jsonl
+│   ├── operating_systems.jsonl
+│   ├── ...
+│   └── data.jsonl              ← OCR教材合并
+├── crypto_and_security/
+│   ├── cryptographic_algorithms.jsonl
+│   ├── cryptographic_foundations.jsonl
+│   ├── key_management_and_pki.jsonl
+│   ├── network_security.jsonl
+│   ├── ...
+│   └── data.jsonl              ← OCR教材合并
+└── comprehensive/
+    ├── general.jsonl
+    └── cross_domain.jsonl
+\end{verbatim}
+
+\section{处理的 PDF 教材清单}
+
+\subsection{计算机科学（7 本）}
+
+\begin{itemize}
+    \item 2025王道408-数据结构（咸鱼学长）
+    \item 2025王道考研408-计算机组成原理（咸鱼学长）
+    \item 2025王道考研408-计算机网络（咸鱼学长）
+    \item 2025年操作系统考研复习指导
+    \item TCP/IP详解 卷1：协议（原书第2版，Kevin R. Fall）
+    \item 计算机概论：基础科学、软件与信息安全导向（北极星）
+    \item 计算机程序设计艺术 第1卷 基本算法（Donald E. Knuth）
+\end{itemize}
+
+\subsection{密码学与安全（17 本）}
+
+\begin{itemize}
+    \item 密码编码学与网络安全 原理与实践 第七版（William Stallings）
+    \item 应用密码学：协议、算法与C源程序 原书第2版（Bruce Schneier）
+    \item 深入浅出密码学——常见加密技术原理与应用（Christof Paar \& Jan Pelzl）
+    \item 公钥密码学的数学基础 第二版（王小云 王明强 孟宪萌）
+    \item 算法数论：格、数域、曲线和密码学（J. P. Buhler 等编）
+    \item 计算机安全学（Dieter Gollmann）
+    \item 网络安全基础：应用与标准 第5版（William Stallings）
+    \item 软件加密与解密（Christian Collberg）
+    \item 逆向工程实战（Bruce Dang 等）
+    \item 逆向工程核心原理（李承远）
+    \item 人工智能安全（方滨兴 编）
+    \item 云计算安全技术（徐涛 等）
+    \item 云计算安全技术与应用（中国电信网络安全实验室）
+    \item 云计算数据安全（黄勤龙）
+    \item 云存储安全：大数据分析与计算的基石（陈兰香）
+    \item 网络空间安全战略（郭宏生 编著）
+\end{itemize}
+
+\subsection{NIST 出版物（39 篇）}
+
+包括 SP 800 系列 30 篇和 FIPS 系列 9 篇，涵盖安全管理、密码学标准、网络安全、身份与访问控制等（完整列表见附录或项目目录）。
+
+\section{工具链与脚本清单}
+
+\begin{table}[htbp]
+\centering
+\caption{项目脚本清单}
+\label{tab:scripts}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{脚本} & \textbf{功能} \\
+\midrule
+\texttt{main.py}                 & 爬虫主入口，支持按来源运行 \\
+\texttt{classify.py}             & 关键词+来源加权分类整理 \\
+\texttt{convert\_to\_raw.py}     & curated $\to$ raw 格式转换 \\
+\texttt{chunk\_to\_jsonl.py}     & 统一分块→JSONL模块 \\
+\texttt{download\_nist\_pdfs.py} & NIST PDF 下载器 \\
+\texttt{organize\_pdfs.py}       & 已处理PDF移入\_processed \\
+\texttt{tesseract\_ocr.py}       & Tesseract OCR管道(CJK修复+页面过滤) \\
+\texttt{process\_english\_pdfs.py} & 英文PDF→raw JSONL \\
+\texttt{process\_scanned\_pdfs.py} & 扫描版PDF OCR→raw JSONL \\
+\texttt{process\_native\_pdfs.py}  & 原生PDF→raw JSONL \\
+\texttt{ocr\_raw\_robust.py}       & 鲁棒OCR→raw(单页容错) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+外部依赖：pymupdf4llm（PDF结构提取）、Tesseract OCR + chi\_sim（中文识别）、mwclient/wikipedia-api（百科爬取）、beautifulsoup4/html2text（HTML清洗）。
+
+\section{总结与下一步}
+
+\subsection{第一阶段成果}
+
+\begin{itemize}
+    \item 建立了完整的多源数据采集管道（爬虫 + PDF提取 + OCR）
+    \item 收集处理 63 本专业 PDF 教材和标准文档
+    \item 产出 \textbf{19,464 篇} 结构化原始文本，\textbf{29.6 MB}，零格式错误
+    \item 全部数据以统一 \texttt{\{"text": "..."\}} JSONL 格式存放于 \texttt{data/raw\_for\_training/}
+\end{itemize}
+
+\subsection{第二阶段展望}
+
+第二阶段将基于本阶段产出的 raw 数据，构建面向学术学习场景的高质量指令数据集：
+
+\begin{enumerate}
+    \item 从 raw 文本块生成问答对（概念解释、章节总结、方法对比、结论归纳等）
+    \item 使用强模型（API）辅助生成 + 人工筛选标注
+    \item 构建训练集/验证集/测试集，题型覆盖术语解释、段落总结、论文摘要改写等
+    \item 采用 QLoRA 对 Qwen3-8B 进行参数高效微调
+    \item 从准确性、完整性、专业性、忠实性四个维度评估微调效果
+\end{enumerate}
+
+\end{document}

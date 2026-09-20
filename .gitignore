@@ -1,0 +1,10 @@
+# 环境与密钥(切勿提交)
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 运行产物(可复现,提交与否按需)
+results/
